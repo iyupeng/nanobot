@@ -1002,6 +1002,7 @@ class OpenAICompatProvider(LLMProvider):
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
+                    ################## responses api non-stream ##################
                     body = self._build_responses_body(
                         messages, tools, model, max_tokens, temperature,
                         reasoning_effort, tool_choice,
@@ -1019,6 +1020,7 @@ class OpenAICompatProvider(LLMProvider):
                         raise
                     self._record_responses_failure(model, reasoning_effort)
 
+            ################## chat.completions api non-stream ##################
             kwargs = self._build_kwargs(
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
@@ -1041,6 +1043,7 @@ class OpenAICompatProvider(LLMProvider):
         idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
         try:
             if self._should_use_responses_api(model, reasoning_effort):
+                ################## responses api stream ##################
                 try:
                     body = self._build_responses_body(
                         messages, tools, model, max_tokens, temperature,
@@ -1082,6 +1085,7 @@ class OpenAICompatProvider(LLMProvider):
                         raise
                     self._record_responses_failure(model, reasoning_effort)
 
+            ################## chat.completions api stream ##################
             kwargs = self._build_kwargs(
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
