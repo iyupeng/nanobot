@@ -172,6 +172,21 @@ def _recording_storage_root() -> Path | None:
 def _recording_enabled() -> bool:
     return os.getenv("RECORD_LLM_INPUT_AND_OUTPUT") == "1"
 
+def _replay_llm_output_first_token_delay_in_millis() -> int:
+    default_delay = 3000
+    delay_str = os.getenv("REPLAY_LLM_OUTPUT_FIRST_TOKEN_DELAY_IN_MILLIS", str(default_delay))
+    try:
+        delay = int(delay_str)
+        if delay < 0:
+            raise ValueError("Delay cannot be negative.")
+        return delay
+    except ValueError:
+        logger.warning(
+            "Invalid value for REPLAY_LLM_OUTPUT_FIRST_TOKEN_DELAY_IN_MILLIS: '{}'. Using default of {} ms.",
+            delay_str,
+            default_delay,
+        )
+        return default_delay
 
 def _to_jsonable(value: Any) -> Any:
     mapping = _coerce_dict(value)
@@ -825,6 +840,11 @@ class OpenAICompatProvider(LLMProvider):
             replay_response = replay_iteration_data.get("response")
             if replay_response is not None:
                 logger.warning("Replaying non-stream response from directory: {}", replay_iteration_directory)
+                # delay before first token to simulate LLM thinking time, configurable via env var
+                first_token_delay_ms = _replay_llm_output_first_token_delay_in_millis()
+                if first_token_delay_ms > 0:
+                    logger.warning("Delaying first token by {} ms to simulate LLM thinking time.", first_token_delay_ms)
+                    await asyncio.sleep(first_token_delay_ms / 1000.0)
                 return self._parse(replay_response)
             replay_chunks = replay_iteration_data.get("chunks") or []
             if replay_chunks:
@@ -832,11 +852,16 @@ class OpenAICompatProvider(LLMProvider):
                     "Replaying {} streamed chunks as a non-stream response.",
                     len(replay_chunks),
                 )
+                # delay before first token to simulate LLM thinking time, configurable via env var
+                first_token_delay_ms = _replay_llm_output_first_token_delay_in_millis()
+                if first_token_delay_ms > 0:
+                    logger.warning("Delaying first token by {} ms to simulate LLM thinking time.", first_token_delay_ms)
+                    await asyncio.sleep(first_token_delay_ms / 1000.0)
                 return self._parse_chunks(replay_chunks)
 
         iteration_directory = _start_recording_iteration(messages, kwargs)
         try:
-            logger.warning("Streaming from LLM provider.")
+            logger.warning("Requesting LLM provider...(non-stream)")
             response = await self._client.chat.completions.create(**kwargs)
             if iteration_directory is not None:
                 _write_json(iteration_directory / "response.json", response)
@@ -870,6 +895,11 @@ class OpenAICompatProvider(LLMProvider):
             replay_timestamps = replay_iteration_data.get("timestamps") or []
             if replay_chunks:
                 logger.warning("Streaming {} chunks from replay.", len(replay_chunks))
+                # delay before first token to simulate LLM thinking time, configurable via env var
+                first_token_delay_ms = _replay_llm_output_first_token_delay_in_millis()
+                if first_token_delay_ms > 0:
+                    logger.warning("Delaying first token by {} ms to simulate LLM thinking time.", first_token_delay_ms)
+                    await asyncio.sleep(first_token_delay_ms / 1000.0)
                 previous_timestamp: float | None = None
                 for chunk, timestamp in zip(replay_chunks, replay_timestamps, strict=False):
                     if previous_timestamp is not None and timestamp is not None:
@@ -889,6 +919,11 @@ class OpenAICompatProvider(LLMProvider):
                     "No replay stream chunks found; replaying stored non-stream response from {}",
                     replay_iteration_directory,
                 )
+                # delay before first token to simulate LLM thinking time, configurable via env var
+                first_token_delay_ms = _replay_llm_output_first_token_delay_in_millis()
+                if first_token_delay_ms > 0:
+                    logger.warning("Delaying first token by {} ms to simulate LLM thinking time.", first_token_delay_ms)
+                    await asyncio.sleep(first_token_delay_ms / 1000.0)
                 replayed = self._parse(replay_response)
                 if on_content_delta and replayed.content:
                     await on_content_delta(replayed.content)
@@ -896,7 +931,7 @@ class OpenAICompatProvider(LLMProvider):
 
         iteration_directory = _start_recording_iteration(messages, kwargs)
         try:
-            logger.warning("Streaming from LLM provider.")
+            logger.warning("Requesting LLM provider...(stream)")
             stream = await self._client.chat.completions.create(**kwargs)
             chunks: list[Any] = []
             chunk_index = 0
