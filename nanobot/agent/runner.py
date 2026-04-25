@@ -554,6 +554,7 @@ class AgentRunner:
             "model": spec.model,
             "retry_mode": spec.provider_retry_mode,
             "on_retry_wait": spec.retry_wait_callback,
+            "session_key": spec.session_key,
         }
         if spec.temperature is not None:
             kwargs["temperature"] = spec.temperature

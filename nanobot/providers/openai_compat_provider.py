@@ -162,7 +162,8 @@ _RESPONSES_FAILURE_THRESHOLD = 3
 _RESPONSES_PROBE_INTERVAL_S = 300  # 5 minutes
 _REPLAY_SESSION_PATTERN = re.compile(r"\[replay:([^\]]+)\]")
 _current_recorded_session_storage_dir_name: str | None = None
-_current_replayed_iteration_index = -1
+# map session_key and its current iteration index during replay
+_current_replayed_iteration_index_mappings = {}
 
 
 def _is_direct_openai_base(api_base: str | None) -> bool:
@@ -313,30 +314,36 @@ def _load_replay_iterations(session_id: str) -> list[dict[str, Any]]:
 def _prepare_replay_iteration(
     messages: list[dict[str, Any]],
     body: dict[str, Any],
+    session_key: str | None,
     *,
     wants_stream: bool,
 ) -> dict[str, Any] | None:
-    global _current_replayed_iteration_index
+    if not session_key:
+        logger.warning("session_key is not provided, skipping checking replay")
+        return None
 
     replay_session_id = _extract_replay_session_id(messages)
     if not replay_session_id:
         return None
 
+    logger.warning(f"Current agent session: {session_key}. Target replay session: {replay_session_id}")
+
     if _is_new_conversation(messages):
-        _current_replayed_iteration_index = -1
+        _current_replayed_iteration_index_mappings[session_key] = -1
 
     iterations = _load_replay_iterations(replay_session_id)
     if not iterations:
-        logger.warning("No replay iterations found for session: {}", replay_session_id)
+        logger.warning("Current agent session: {}. No replay iterations found for session: {}", session_key, replay_session_id)
         return None
 
-    next_index = _current_replayed_iteration_index + 1
+    next_index = _current_replayed_iteration_index_mappings[session_key] + 1
     while next_index < len(iterations):
         iteration = iterations[next_index]
         if wants_stream and "chunks" in iteration:
-            _current_replayed_iteration_index = next_index
+            _current_replayed_iteration_index_mappings[session_key] = next_index
             logger.warning(
-                "Replaying iteration {}/{} for session {} from {}",
+                "Current agent session: {}. Replaying iteration {}/{} for session {} from {}",
+                session_key,
                 next_index + 1,
                 len(iterations),
                 replay_session_id,
@@ -344,9 +351,9 @@ def _prepare_replay_iteration(
             )
             return iteration
         if not wants_stream and "response" in iteration:
-            _current_replayed_iteration_index = next_index
+            _current_replayed_iteration_index_mappings[session_key] = next_index
             logger.warning(
-                "Replaying iteration {}/{} for session {} from {}",
+                "Current agent session: {session_key}. Replaying iteration {}/{} for session {} from {}",
                 next_index + 1,
                 len(iterations),
                 replay_session_id,
@@ -355,7 +362,7 @@ def _prepare_replay_iteration(
             return iteration
         next_index += 1
 
-    logger.warning("No more replay iterations available for session: {}", replay_session_id)
+    logger.warning("Current agent session: {}. No more replay iterations available for session: {}", session_key, replay_session_id)
     return None
 
 
@@ -1240,6 +1247,7 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        session_key: str | None = None,
     ) -> LLMResponse:
         try:
             if self._should_use_responses_api(model, reasoning_effort):
@@ -1249,7 +1257,7 @@ class OpenAICompatProvider(LLMProvider):
                         messages, tools, model, max_tokens, temperature,
                         reasoning_effort, tool_choice,
                     )
-                    replay_iteration = _prepare_replay_iteration(messages, body, wants_stream=False)
+                    replay_iteration = _prepare_replay_iteration(messages, body, session_key, wants_stream=False)
                     if replay_iteration is not None:
                         result = parse_response_output(replay_iteration["response"])
                     else:
@@ -1289,6 +1297,7 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        session_key: str | None = None,
     ) -> LLMResponse:
         idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
         try:
@@ -1300,7 +1309,7 @@ class OpenAICompatProvider(LLMProvider):
                         reasoning_effort, tool_choice,
                     )
                     body["stream"] = True
-                    replay_iteration = _prepare_replay_iteration(messages, body, wants_stream=True)
+                    replay_iteration = _prepare_replay_iteration(messages, body, session_key, wants_stream=True)
                     iteration_dir = None
                     if replay_iteration is None:
                         iteration_dir = _ensure_recording_iteration(messages, body)
