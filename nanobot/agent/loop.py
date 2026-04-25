@@ -216,10 +216,10 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
-    async def _run_agent_loop(self, initial_messages: list[dict], on_progress: Callable[..., Awaitable[None]] | None = None, on_stream: Callable[[str], Awaitable[None]] | None = None, on_stream_end: Callable[..., Awaitable[None]] | None = None, *, channel: str = "cli", chat_id: str = "direct", message_id: str | None = None) -> tuple[str | None, list[str], list[dict]]:
+    async def _run_agent_loop(self, initial_messages: list[dict], on_progress: Callable[..., Awaitable[None]] | None = None, on_stream: Callable[[str], Awaitable[None]] | None = None, on_stream_end: Callable[..., Awaitable[None]] | None = None, *, channel: str = "cli", chat_id: str = "direct", message_id: str | None = None, session_key: str | None = None) -> tuple[str | None, list[str], list[dict]]:
         loop_hook = _LoopHook(self, on_progress=on_progress, on_stream=on_stream, on_stream_end=on_stream_end, channel=channel, chat_id=chat_id, message_id=message_id)
         hook: AgentHook = _LoopHookChain(loop_hook, self._extra_hooks) if self._extra_hooks else loop_hook
-        result = await self.runner.run(AgentRunSpec(initial_messages=initial_messages, tools=self.tools, model=self.model, max_iterations=self.max_iterations, hook=hook, error_message="Sorry, I encountered an error calling the AI model.", concurrent_tools=True, profiler=self._profiler))
+        result = await self.runner.run(AgentRunSpec(initial_messages=initial_messages, tools=self.tools, model=self.model, max_iterations=self.max_iterations, hook=hook, error_message="Sorry, I encountered an error calling the AI model.", concurrent_tools=True, profiler=self._profiler), session_key=session_key)
         self._last_usage = result.usage
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
@@ -344,7 +344,7 @@ class AgentLoop:
             await self.bus.publish_outbound(OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta))
 
         prof.push("agent_loop")
-        final_content, _, all_msgs = await self._run_agent_loop(initial_messages, on_progress=on_progress or _bus_progress, on_stream=on_stream, on_stream_end=on_stream_end, channel=msg.channel, chat_id=msg.chat_id, message_id=msg.metadata.get("message_id"))
+        final_content, _, all_msgs = await self._run_agent_loop(initial_messages, on_progress=on_progress or _bus_progress, on_stream=on_stream, on_stream_end=on_stream_end, channel=msg.channel, chat_id=msg.chat_id, message_id=msg.metadata.get("message_id"), session_key=key)
         prof.pop()
 
         prof.push("session_end")

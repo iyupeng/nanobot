@@ -40,7 +40,8 @@ _DEFAULT_OPENROUTER_HEADERS = {
 _REPLAY_TAG_RE = re.compile(r"\[replay:([^\]]+)\]")
 
 _current_recorded_session_storage_dir_name: str | None = None
-_current_replayed_iteration_index = -1
+# map session_key and its current iteration index during replay
+_current_replayed_iteration_index_mappings = {}
 _recorded_sessions: dict[str, list[dict[str, Any]]] = {}
 
 
@@ -330,41 +331,37 @@ _recorded_sessions = _load_available_replay_sessions()
 logger.warning(f"Loaded {len(_recorded_sessions)} recorded sessions ready for replay.")
 
 
-def _load_replay_iteration_data(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    global _current_replayed_iteration_index
-
+def _load_replay_iteration_data(messages: list[dict[str, Any]], session_key: str | None) -> dict[str, Any] | None:
     replay_session_id = _extract_replay_session_id(messages)
     if not replay_session_id:
         logger.warning("No replay session ID found in the first user message. Streaming from provider.")
         return None
 
+    if not session_key:
+        logger.warning("session_key is not provided, skipping checking replay")
+        return None
+
+    logger.warning(f"Current agent session: {session_key}. Target replay session: {replay_session_id}")
+
     if _is_new_conversation(messages):
-        _current_replayed_iteration_index = -1
+        _current_replayed_iteration_index_mappings[session_key] = -1
 
     session_iterations = _recorded_sessions.get(replay_session_id)
     if not session_iterations:
-        sessions_directory = _recording_storage_root()
-        if sessions_directory is None:
-            logger.error(
-                "Replay requested but RECORD_LLM_INPUT_AND_OUTPUT_STORAGE_DIRECTORY is not set."
-            )
-        else:
-            logger.error(
-                "Replay session directory does not exist: {}",
-                sessions_directory / replay_session_id / "iterations",
-            )
+        logger.warning("Current agent session: {}. No replay iterations found for session: {}", session_key, replay_session_id)
         return None
 
     iteration_directory = session_iterations[0]["iteration_directory"].parent.parent
-    logger.warning("Replaying session from directory: {}", iteration_directory)
+    logger.warning("Current agent session: {}. Replaying session from directory: {}", session_key, iteration_directory)
 
-    next_index = _current_replayed_iteration_index + 1
+    next_index = _current_replayed_iteration_index_mappings[session_key] + 1
     if next_index >= len(session_iterations):
-        logger.warning("No more iterations available to replay for session: {}", replay_session_id)
+        logger.warning("Current agent session: {}. No more iterations available to replay for session: {}", session_key, replay_session_id)
         return None
-    _current_replayed_iteration_index = next_index
+    _current_replayed_iteration_index_mappings[session_key] = next_index
     logger.warning(
-        "Replaying iteration {}/{} for session.",
+        "Current agent session: {}. Replaying iteration ({}/{}) for session.",
+        session_key,
         next_index + 1,
         len(session_iterations),
     )
@@ -815,13 +812,14 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        session_key: str | None = None,
     ) -> LLMResponse:
         kwargs = self._build_kwargs(
             messages, tools, model, max_tokens, temperature,
             reasoning_effort, tool_choice,
         )
 
-        replay_iteration_data = _load_replay_iteration_data(messages)
+        replay_iteration_data = _load_replay_iteration_data(messages, session_key)
         if replay_iteration_data is not None:
             replay_iteration_directory = replay_iteration_data["iteration_directory"]
             replay_response = replay_iteration_data.get("response")
@@ -856,6 +854,7 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        session_key: str | None = None,
     ) -> LLMResponse:
         kwargs = self._build_kwargs(
             messages, tools, model, max_tokens, temperature,
@@ -864,7 +863,7 @@ class OpenAICompatProvider(LLMProvider):
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
 
-        replay_iteration_data = _load_replay_iteration_data(messages)
+        replay_iteration_data = _load_replay_iteration_data(messages, session_key)
         if replay_iteration_data is not None:
             replay_iteration_directory = replay_iteration_data["iteration_directory"]
             replay_chunks = replay_iteration_data.get("chunks") or []

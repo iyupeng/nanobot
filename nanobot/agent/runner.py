@@ -52,7 +52,7 @@ class AgentRunner:
     def __init__(self, provider: LLMProvider):
         self.provider = provider
 
-    async def run(self, spec: AgentRunSpec) -> AgentRunResult:
+    async def run(self, spec: AgentRunSpec, session_key: str | None = None) -> AgentRunResult:
         hook = spec.hook or AgentHook()
         prof = spec.profiler
         messages = list(spec.initial_messages)
@@ -68,7 +68,7 @@ class AgentRunner:
             context = AgentHookContext(iteration=iteration, messages=messages, profiler=prof)
             await hook.before_iteration(context)
 
-            kwargs: dict[str, Any] = {"messages": messages, "tools": spec.tools.get_definitions(), "model": spec.model}
+            kwargs: dict[str, Any] = {"messages": messages, "tools": spec.tools.get_definitions(), "model": spec.model, "session_key": session_key}
             if spec.temperature is not None:
                 kwargs["temperature"] = spec.temperature
             if spec.max_tokens is not None:

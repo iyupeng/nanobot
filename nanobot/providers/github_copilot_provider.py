@@ -221,6 +221,7 @@ class GitHubCopilotProvider(OpenAICompatProvider):
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        session_key: str | None = None,
     ):
         await self._refresh_client_api_key()
         return await super().chat(
@@ -231,6 +232,7 @@ class GitHubCopilotProvider(OpenAICompatProvider):
             temperature=temperature,
             reasoning_effort=reasoning_effort,
             tool_choice=tool_choice,
+            session_key=session_key,
         )
 
     async def chat_stream(
@@ -243,6 +245,7 @@ class GitHubCopilotProvider(OpenAICompatProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, object] | None = None,
         on_content_delta: Callable[[str], None] | None = None,
+        session_key: str | None = None,
     ):
         await self._refresh_client_api_key()
         return await super().chat_stream(
@@ -254,4 +257,5 @@ class GitHubCopilotProvider(OpenAICompatProvider):
             reasoning_effort=reasoning_effort,
             tool_choice=tool_choice,
             on_content_delta=on_content_delta,
+            session_key=session_key,
         )
