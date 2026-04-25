@@ -416,3 +416,6 @@ class AgentLoop:
         response = await self._process_message(msg, session_key=session_key, on_progress=on_progress, on_stream=on_stream, on_stream_end=on_stream_end)
         prof.pop()
         return response
+
+    async def close_mcp(self) -> None:
+        pass
