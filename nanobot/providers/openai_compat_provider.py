@@ -311,6 +311,27 @@ def _load_replay_iterations(session_id: str) -> list[dict[str, Any]]:
             iterations.append(iteration_data)
     return iterations
 
+def _load_all_available_replay_sessions() -> dict[str, Any]:
+    """
+    Load iterations for all recorded sessions
+    """
+    sessions_dir = _recording_root()
+    if sessions_dir is None:
+        return {}
+    if not sessions_dir.exists():
+        return {}
+
+    result = {}
+    for session_dir in sorted(sessions_dir.iterdir()):
+        if not sessions_dir.is_dir():
+            continue
+        result[session_dir.name] = _load_replay_iterations(session_dir.name)
+
+    return result
+
+_all_available_replay_sessions = _load_all_available_replay_sessions()
+logger.warning(f"Loaded ({len(_all_available_replay_sessions)}) recorded sessions which are ready for replay")
+
 def _prepare_replay_iteration(
     messages: list[dict[str, Any]],
     body: dict[str, Any],
@@ -331,7 +352,7 @@ def _prepare_replay_iteration(
     if _is_new_conversation(messages):
         _current_replayed_iteration_index_mappings[session_key] = -1
 
-    iterations = _load_replay_iterations(replay_session_id)
+    iterations = _all_available_replay_sessions.get(replay_session_id, [])
     if not iterations:
         logger.warning("Current agent session: {}. No replay iterations found for session: {}", session_key, replay_session_id)
         return None
@@ -342,7 +363,7 @@ def _prepare_replay_iteration(
         if wants_stream and "chunks" in iteration:
             _current_replayed_iteration_index_mappings[session_key] = next_index
             logger.warning(
-                "Current agent session: {}. Replaying iteration {}/{} for session {} from {}",
+                "Current agent session: {}. Replaying iteration ({}/{}) for session {} from {}",
                 session_key,
                 next_index + 1,
                 len(iterations),
@@ -353,7 +374,7 @@ def _prepare_replay_iteration(
         if not wants_stream and "response" in iteration:
             _current_replayed_iteration_index_mappings[session_key] = next_index
             logger.warning(
-                "Current agent session: {session_key}. Replaying iteration {}/{} for session {} from {}",
+                "Current agent session: {session_key}. Replaying iteration ({}/{}) for session {} from {}",
                 next_index + 1,
                 len(iterations),
                 replay_session_id,
