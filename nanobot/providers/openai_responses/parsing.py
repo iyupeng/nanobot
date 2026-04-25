@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from pathlib import Path
+import time
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -207,9 +209,45 @@ def parse_response_output(response: Any) -> LLMResponse:
     )
 
 
+def _event_get(event: Any, key: str, default: Any = None) -> Any:
+    if isinstance(event, dict):
+        return event.get(key, default)
+    return getattr(event, key, default)
+
+
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(key): _to_jsonable(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return _to_jsonable(dump())
+    if hasattr(value, "__dict__"):
+        return _to_jsonable(vars(value))
+    return str(value)
+
+
+def _record_stream_event(record_dir: Path | None, event: Any, index: int) -> None:
+    if record_dir is None:
+        return
+    stream_dir = record_dir / "stream_chunks"
+    stream_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+    millis = int((time.time() % 1) * 1000)
+    chunk_id = f"{index:06d}_{timestamp}.{millis:03d}Z"
+    (stream_dir / f"{chunk_id}.json").write_text(
+        json.dumps(_to_jsonable(event), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 async def consume_sdk_stream(
     stream: Any,
     on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+    record_dir: Path | None = None,
 ) -> tuple[str, list[ToolCallRequest], str, dict[str, int], str | None]:
     """Consume an SDK async stream from ``client.responses.create(stream=True)``."""
     content = ""
@@ -218,47 +256,50 @@ async def consume_sdk_stream(
     finish_reason = "stop"
     usage: dict[str, int] = {}
     reasoning_content: str | None = None
+    event_index = 0
 
     async for event in stream:
-        event_type = getattr(event, "type", None)
+        event_index += 1
+        _record_stream_event(record_dir, event, event_index)
+        event_type = _event_get(event, "type")
         if event_type == "response.output_item.added":
-            item = getattr(event, "item", None)
-            if item and getattr(item, "type", None) == "function_call":
-                call_id = getattr(item, "call_id", None)
+            item = _event_get(event, "item")
+            if item and _event_get(item, "type") == "function_call":
+                call_id = _event_get(item, "call_id")
                 if not call_id:
                     continue
                 tool_call_buffers[call_id] = {
-                    "id": getattr(item, "id", None) or "fc_0",
-                    "name": getattr(item, "name", None),
-                    "arguments": getattr(item, "arguments", None) or "",
+                    "id": _event_get(item, "id") or "fc_0",
+                    "name": _event_get(item, "name"),
+                    "arguments": _event_get(item, "arguments") or "",
                 }
         elif event_type == "response.output_text.delta":
-            delta_text = getattr(event, "delta", "") or ""
+            delta_text = _event_get(event, "delta", "") or ""
             content += delta_text
             if on_content_delta and delta_text:
                 await on_content_delta(delta_text)
         elif event_type == "response.function_call_arguments.delta":
-            call_id = getattr(event, "call_id", None)
+            call_id = _event_get(event, "call_id")
             if call_id and call_id in tool_call_buffers:
-                tool_call_buffers[call_id]["arguments"] += getattr(event, "delta", "") or ""
+                tool_call_buffers[call_id]["arguments"] += _event_get(event, "delta", "") or ""
         elif event_type == "response.function_call_arguments.done":
-            call_id = getattr(event, "call_id", None)
+            call_id = _event_get(event, "call_id")
             if call_id and call_id in tool_call_buffers:
-                tool_call_buffers[call_id]["arguments"] = getattr(event, "arguments", "") or ""
+                tool_call_buffers[call_id]["arguments"] = _event_get(event, "arguments", "") or ""
         elif event_type == "response.output_item.done":
-            item = getattr(event, "item", None)
-            if item and getattr(item, "type", None) == "function_call":
-                call_id = getattr(item, "call_id", None)
+            item = _event_get(event, "item")
+            if item and _event_get(item, "type") == "function_call":
+                call_id = _event_get(item, "call_id")
                 if not call_id:
                     continue
                 buf = tool_call_buffers.get(call_id) or {}
-                args_raw = buf.get("arguments") or getattr(item, "arguments", None) or "{}"
+                args_raw = buf.get("arguments") or _event_get(item, "arguments") or "{}"
                 try:
                     args = json.loads(args_raw)
                 except Exception:
                     logger.warning(
                         "Failed to parse tool call arguments for '{}': {}",
-                        buf.get("name") or getattr(item, "name", None),
+                        buf.get("name") or _event_get(item, "name"),
                         str(args_raw)[:200],
                     )
                     args = json_repair.loads(args_raw)
@@ -266,32 +307,32 @@ async def consume_sdk_stream(
                         args = {"raw": args_raw}
                 tool_calls.append(
                     ToolCallRequest(
-                        id=f"{call_id}|{buf.get('id') or getattr(item, 'id', None) or 'fc_0'}",
-                        name=buf.get("name") or getattr(item, "name", None) or "",
+                        id=f"{call_id}|{buf.get('id') or _event_get(item, 'id') or 'fc_0'}",
+                        name=buf.get("name") or _event_get(item, "name") or "",
                         arguments=args,
                     )
                 )
         elif event_type == "response.completed":
-            resp = getattr(event, "response", None)
-            status = getattr(resp, "status", None) if resp else None
+            resp = _event_get(event, "response")
+            status = _event_get(resp, "status") if resp else None
             finish_reason = map_finish_reason(status)
             if resp:
-                usage_obj = getattr(resp, "usage", None)
+                usage_obj = _event_get(resp, "usage")
                 if usage_obj:
                     usage = {
-                        "prompt_tokens": int(getattr(usage_obj, "input_tokens", 0) or 0),
-                        "completion_tokens": int(getattr(usage_obj, "output_tokens", 0) or 0),
-                        "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+                        "prompt_tokens": int(_event_get(usage_obj, "input_tokens", 0) or 0),
+                        "completion_tokens": int(_event_get(usage_obj, "output_tokens", 0) or 0),
+                        "total_tokens": int(_event_get(usage_obj, "total_tokens", 0) or 0),
                     }
-                for out_item in getattr(resp, "output", None) or []:
-                    if getattr(out_item, "type", None) == "reasoning":
-                        for s in getattr(out_item, "summary", None) or []:
-                            if getattr(s, "type", None) == "summary_text":
-                                text = getattr(s, "text", None)
+                for out_item in _event_get(resp, "output") or []:
+                    if _event_get(out_item, "type") == "reasoning":
+                        for s in _event_get(out_item, "summary") or []:
+                            if _event_get(s, "type") == "summary_text":
+                                text = _event_get(s, "text")
                                 if text:
                                     reasoning_content = (reasoning_content or "") + text
         elif event_type in {"error", "response.failed"}:
-            detail = getattr(event, "error", None) or getattr(event, "message", None) or event
+            detail = _event_get(event, "error") or _event_get(event, "message") or event
             raise RuntimeError(f"Response failed: {str(detail)[:500]}")
 
     return content, tool_calls, finish_reason, usage, reasoning_content
